@@ -161,7 +161,7 @@ export class ContentAgent {
         Provide concise, actionable suggestions in JSON format: {"improvements": ["suggestion1", "suggestion2"]}
       `;
 
-      const message = await this.groq.messages.create({
+      const message = await (this.groq as any).messages.create({
         model: 'mixtral-8x7b-32768',
         max_tokens: 1024,
         messages: [{ role: 'user', content: prompt }],

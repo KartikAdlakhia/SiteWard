@@ -64,7 +64,7 @@ export class PerformanceAgent {
       );
 
       // Create issues
-      for (const img of imageOptimizations.unoptimizedImages || []) {
+      for (const img of imageOptimizations.unoptimizedList || []) {
         await createIssue(
           this.websiteId,
           'performance',

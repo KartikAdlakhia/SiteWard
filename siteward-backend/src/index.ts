@@ -124,7 +124,7 @@ app.post('/api/websites/:id/scan', async (req: Request, res: Response) => {
 
     if (error) throw error;
 
-    const results = await triggerScans(req.params.id, website.url);
+    const results = await triggerScans(req.params.id as string, website.url as string);
     res.json(results);
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
@@ -153,7 +153,7 @@ app.post('/api/issues/:id/fix', async (req: Request, res: Response) => {
   try {
     const { data: issue, error: issueError } = await supabase
       .from('issues')
-      .select('website_id')
+      .select('*')
       .eq('id', req.params.id)
       .single();
 
