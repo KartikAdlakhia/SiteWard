@@ -3,7 +3,7 @@ services:
     name: siteward-api
     runtime: node
     rootDir: siteward-backend
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --production=false && npm run build
     startCommand: npm run start
     envVars:
       - key: PORT

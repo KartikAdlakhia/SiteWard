@@ -1,0 +1,36 @@
+declare module 'crypto-js' {
+  export const AES: any;
+  export const DES: any;
+  export const Crypto: any;
+  export const HmacSHA256: any;
+  export const MD5: any;
+  export const RIPEMD160: any;
+  export const SHA1: any;
+  export const SHA256: any;
+  export const SHA3: any;
+  export const SHA512: any;
+  export const enc: any;
+  export const lib: any;
+  export const mode: any;
+  export const pad: any;
+  export const algo: any;
+  export const format: any;
+  export const WordArray: any;
+  export const BlockCipher: any;
+  export const CipherParams: any;
+  export const Hasher: any;
+  export const HMAC: any;
+  export const OpenSSL: any;
+  export const TripleDES: any;
+  export const Rabbit: any;
+  export const RabbitLegacy: any;
+  export const RC4: any;
+  export const Base: any;
+  export const Base64: any;
+  export const Base64url: any;
+  export const Base32: any;
+  export const Utf8: any;
+  export const Utf16: any;
+  export const Utf16BE: any;
+  export const Utf16LE: any;
+}
