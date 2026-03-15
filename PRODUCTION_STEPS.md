@@ -15,17 +15,20 @@
 
 ---
 
-## Phase 2: Deploy Backend to Railway (5 minutes)
+## Phase 2: Deploy Backend to Render (5 minutes)
 
-1. Go to https://railway.app/dashboard
-2. Click **+ New Project**
-3. Select **Deploy from GitHub repo**
-4. Search for and select: `KartikAdlakhia/SiteWard`
-5. In the repo settings, set:
+1. Go to https://dashboard.render.com/
+2. Click **+ New** → **Web Service**
+3. Select **Deploy an existing GitHub repository**
+4. Connect your GitHub account if needed
+5. Search for and select: `KartikAdlakhia/SiteWard`
+6. Fill in the deployment settings:
+   - **Name**: `siteward-api`
    - **Root Directory**: `siteward-backend`
-6. Click **Deploy**
-7. While deploying, click on the service and go to **Variables**
-8. Add these environment variables:
+   - **Environment**: `Node`
+   - **Build Command**: `npm install`
+   - **Start Command**: `npm run start` (or `node dist/index.js`)
+7. Click **Advanced** and add these environment variables:
    ```
    PORT=5000
    NODE_ENV=production
@@ -34,12 +37,15 @@
    GROQ_API_KEY=your-groq-api-key-here
    GITHUB_TOKEN=your-github-token-here
    ```
-9. Click **Save**
-10. Wait for the deployment to complete
-11. Click **Domains** and copy your Railway domain (e.g., `siteward-api-production.up.railway.app`)
-12. **IMPORTANT**: Save this domain - you'll need it for the frontend!
+8. Under **Plan**: Select **Free** (important!)
+9. Click **Create Web Service**
+10. Wait for the deployment to complete (3-5 minutes)
+11. Copy your Render URL from the top of the page (e.g., `siteward-api.onrender.com`)
+12. **IMPORTANT**: Save this URL - you'll need it for the frontend!
 
-✅ Backend is now live!
+✅ Backend is now live on Render (free tier)!
+
+**Note**: Render's free tier will spin down after 15 minutes of inactivity. This means the first request after inactivity takes ~30 seconds to respond. This is fine for a monitoring service that makes regular requests.
 
 ---
 
@@ -57,9 +63,9 @@
    ```
    VITE_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
    VITE_SUPABASE_ANON_KEY=your-supabase-anon-key-here
-   VITE_API_URL=https://YOUR-RAILWAY-DOMAIN/api
+   VITE_API_URL=https://YOUR-RENDER-DOMAIN/api
    ```
-   (Replace placeholders with your actual values!)
+   (Replace `YOUR-RENDER-DOMAIN` with the domain from Phase 2! e.g., `siteward-api.onrender.com`)
 6. Click **Deploy**
 7. Wait for the deployment to complete
 8. Copy your Vercel domain from the success page
