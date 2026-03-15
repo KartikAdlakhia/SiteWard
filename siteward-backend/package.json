@@ -1,0 +1,37 @@
+{
+  "name": "siteward-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": ["website", "monitoring", "maintenance", "ai"],
+  "author": "SiteWard",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.99.1",
+    "@types/express": "^5.0.6",
+    "@types/puppeteer": "^5.4.7",
+    "axios": "^1.13.6",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.1.1",
+    "lighthouse": "^13.0.3",
+    "node-html-parser": "^7.1.0",
+    "nodemon": "^3.1.14",
+    "puppeteer": "^24.39.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

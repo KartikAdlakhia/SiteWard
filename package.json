@@ -1,0 +1,25 @@
+{
+  "name": "siteward",
+  "version": "1.0.0",
+  "description": "AI-powered website maintenance system for startups",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"cd siteward-backend && npm run dev\" \"cd siteward-frontend && npm run dev\"",
+    "build": "npm run build --prefix siteward-backend && npm run build --prefix siteward-frontend",
+    "start": "npm start --prefix siteward-backend",
+    "setup": "bash setup.sh"
+  },
+  "keywords": [
+    "website",
+    "monitoring",
+    "maintenance",
+    "ai",
+    "agents",
+    "startup"
+  ],
+  "author": "SiteWard",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

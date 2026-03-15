@@ -1,0 +1,5 @@
+{
+  "buildCommand": "npm run build --prefix siteward-frontend",
+  "outputDirectory": "siteward-frontend/dist",
+  "devCommand": "npm run dev --prefix siteward-frontend"
+}

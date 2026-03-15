@@ -1,0 +1,180 @@
+.website-card {
+  background: white;
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--box-shadow);
+  border-top: 4px solid var(--primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.website-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+}
+
+.website-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+
+.website-info {
+  display: flex;
+  gap: 12px;
+  flex: 1;
+  align-items: flex-start;
+}
+
+.website-info svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.website-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin: 0 0 4px 0;
+}
+
+.website-url {
+  font-size: 13px;
+  color: var(--gray-500);
+  margin: 0;
+  word-break: break-all;
+}
+
+.health-badge {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 800;
+  flex-shrink: 0;
+  color: white;
+}
+
+.score-excellent {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+}
+
+.score-good {
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+}
+
+.score-fair {
+  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+}
+
+.score-poor {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+}
+
+.website-card-body {
+  flex: 1;
+  margin-bottom: 16px;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.status-text {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.status-text.healthy {
+  color: var(--success);
+}
+
+.status-text.warning {
+  color: var(--warning);
+}
+
+.status-text.critical {
+  color: var(--danger);
+}
+
+.scan-info {
+  background-color: var(--gray-50);
+  padding: 12px;
+  border-radius: 8px;
+}
+
+.scan-time {
+  font-size: 12px;
+  color: var(--gray-600);
+  margin: 0;
+}
+
+.website-card-footer {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-scan,
+.btn-delete {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--gray-300);
+  background: white;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--gray-700);
+}
+
+.btn-scan:hover:not(:disabled) {
+  background-color: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-delete:hover {
+  background-color: #fee2e2;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-scan:disabled,
+.btn-scan.loading {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .website-card {
+    padding: 16px;
+  }
+
+  .health-badge {
+    width: 50px;
+    height: 50px;
+    font-size: 18px;
+  }
+
+  .btn-scan,
+  .btn-delete {
+    flex: 1;
+  }
+}

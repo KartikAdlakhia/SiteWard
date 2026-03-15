@@ -1,0 +1,204 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║           🚀 DEPLOY SITEWARD IN 30 MINUTES - EXACT STEPS 🚀                ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+DO THIS NOW (in order):
+
+═══════════════════════════════════════════════════════════════════════════════
+1️⃣  PUSH CODE TO GITHUB (5 minutes)
+═══════════════════════════════════════════════════════════════════════════════
+
+Step 1: Go to https://github.com/new
+  → Repository name: siteward
+  → Public (for portfolio)
+  → Create repository
+
+Step 2: Run these commands:
+
+cd siteward
+git init
+git add .
+git commit -m "Initial: SiteWard AI Website Maintenance"
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/siteward.git
+git push -u origin main
+
+(Replace YOUR_USERNAME with your GitHub username)
+
+✅ Check: Go to your GitHub repo and see all files uploaded
+
+═══════════════════════════════════════════════════════════════════════════════
+2️⃣  SET UP PRODUCTION SUPABASE (5 minutes)
+═══════════════════════════════════════════════════════════════════════════════
+
+Step 1: Go to https://supabase.com
+  → Click "New project"
+  → Name: siteward-production
+  → Create password
+  → Choose region
+  → Create project
+
+Step 2: Wait for setup (2 minutes)
+
+Step 3: Get your keys:
+  → Click Settings → API
+  → Copy "Project URL"
+  → Copy "anon" key
+  → Save them somewhere!
+
+Step 4: Set up database:
+  → Click "SQL Editor"
+  → Click "New Query"
+  → Paste SQL from README.md (CREATE TABLE statements)
+  → Click "RUN"
+
+✅ Check: Go to Table Editor and see websites, scan_results, issues tables
+
+═══════════════════════════════════════════════════════════════════════════════
+3️⃣  DEPLOY FRONTEND TO VERCEL (5 minutes)
+═══════════════════════════════════════════════════════════════════════════════
+
+Step 1: Go to https://vercel.com
+  → Sign in with GitHub
+  → Click "New Project"
+  → Select "siteward" repository
+  → Import
+
+Step 2: Configure:
+  → Framework: Vite
+  → Root Directory: siteward-frontend
+  → Build Command: npm run build
+  → Click "Continue"
+
+Step 3: Add environment variables:
+  VITE_SUPABASE_URL=https://xxxxx.supabase.co
+  VITE_SUPABASE_ANON_KEY=eyJxxxxx...
+  VITE_API_URL=https://your-api.com/api
+
+(Use your Supabase URL from step 2 above)
+(For VITE_API_URL, use placeholder for now, update later)
+
+Step 4: Click "Deploy"
+
+⏳ Wait 2-3 minutes for build...
+
+✅ Check: You should get a URL like siteward.vercel.app
+   Save this URL!
+
+═══════════════════════════════════════════════════════════════════════════════
+4️⃣  DEPLOY BACKEND TO RAILWAY (5 minutes)
+═══════════════════════════════════════════════════════════════════════════════
+
+Step 1: Go to https://railway.app
+  → Sign in with GitHub
+  → Click "New Project"
+  → Select "Deploy from GitHub repo"
+
+Step 2: Connect:
+  → Select your "siteward" repository
+  → Choose directory: siteward-backend
+  → Click "Deploy"
+
+Step 3: Add environment variables (go to Variables tab):
+  PORT=5000
+  NODE_ENV=production
+  SUPABASE_URL=https://xxxxx.supabase.co
+  SUPABASE_ANON_KEY=eyJxxxxx...
+  GROQ_API_KEY=gsk_xxxxx...
+
+  (Fill in with your actual keys from earlier)
+
+Step 4: Click "Save"
+
+⏳ Wait 3-5 minutes for build and deploy...
+
+✅ Check: Go to Railway dashboard, you should see a green checkmark
+   Click on your project → go to Deployments tab
+   You'll see a domain URL like: siteward-api-xxxx.up.railway.app
+   Save this URL!
+
+═══════════════════════════════════════════════════════════════════════════════
+5️⃣  UPDATE FRONTEND WITH BACKEND URL (2 minutes)
+═══════════════════════════════════════════════════════════════════════════════
+
+Step 1: Go to Vercel dashboard
+  → Select your siteward project
+  → Settings → Environment Variables
+
+Step 2: Edit VITE_API_URL
+  → Change from placeholder to: https://your-railway-domain.com/api
+  → (Use the domain from Railway step above)
+
+Step 3: Click "Save"
+
+Step 4: Redeploy:
+  → Go back to Deployments
+  → Find latest deployment
+  → Click the ... menu
+  → Click "Redeploy"
+
+⏳ Wait 2-3 minutes for rebuild...
+
+═══════════════════════════════════════════════════════════════════════════════
+6️⃣  TEST YOUR PRODUCTION APP (3 minutes)
+═══════════════════════════════════════════════════════════════════════════════
+
+Test 1: Frontend loads
+  → Open https://siteward.vercel.app
+  → Should see dashboard
+  → Check console (F12) - no errors
+
+Test 2: Backend responds
+  → In terminal: curl https://your-api-domain.com/api/health
+  → Should return: {"status":"ok",...}
+
+Test 3: Add a website
+  → Click "Add Website" button
+  → URL: https://example.com
+  → Name: Test Site
+  → Click "Add"
+  → Check Supabase - new row in websites table
+
+Test 4: Agents run
+  → Click "Scan" button
+  → Wait 30 seconds
+  → Click "Issues" tab
+  → Should see detected issues
+
+✅ ALL WORKING? CONGRATS! You're deployed! 🎉
+
+═══════════════════════════════════════════════════════════════════════════════
+PRODUCTION URLS
+═══════════════════════════════════════════════════════════════════════════════
+
+Your app is now live at:
+
+FRONTEND:  https://siteward.vercel.app
+BACKEND:   https://your-api-domain.com
+DATABASE:  https://xxxxx.supabase.co
+
+You can share the FRONTEND URL with users!
+
+═══════════════════════════════════════════════════════════════════════════════
+NEXT STEPS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Test with real websites
+2. Create 60-second demo video
+3. Share on GitHub, LinkedIn, Twitter
+4. Monitor Groq API usage
+5. Add email notifications (optional)
+6. Set up uptime monitoring (optional)
+
+═══════════════════════════════════════════════════════════════════════════════
+NEED HELP?
+═══════════════════════════════════════════════════════════════════════════════
+
+Check these files:
+- PRODUCTION_DEPLOYMENT.md (detailed guide)
+- QUICK_REFERENCE.md (commands cheat sheet)
+- README.md (full documentation)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎉 YOUR SITEWARD IS NOW LIVE! 🚀
