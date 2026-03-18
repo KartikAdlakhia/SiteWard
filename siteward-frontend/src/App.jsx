@@ -162,12 +162,45 @@ export default function App() {
     return <Auth onSession={setSession} />;
   }
 
+  const totalSites = websites.length;
+  const healthySites = websites.filter((website) => website.status === 'healthy').length;
+  const warningSites = websites.filter((website) => website.status === 'warning').length;
+  const criticalSites = websites.filter((website) => website.status === 'critical').length;
+  const averageHealthScore = totalSites
+    ? Math.round(
+        websites.reduce((total, website) => total + (Number(website.health_score) || 0), 0) / totalSites
+      )
+    : 0;
+
   // Calculate metrics for display
   const latestMonitor = scans.find(s => s.scan_type === 'monitor');
   const uptimeStr = latestMonitor?.metrics?.uptimePercentage || '99.982%';
   const responseTimeStr = latestMonitor?.metrics?.fetchTime ? `${latestMonitor.metrics.fetchTime}ms` : '342ms';
   
   const issuesFound = scans.reduce((acc, s) => acc + (s.issues?.length || 0), 0);
+
+  const getScanHoverText = (scan) => {
+    const lines = [
+      `Scan type: ${scan.scan_type}`,
+      `Status: ${scan.status}`,
+      `Created: ${new Date(scan.created_at).toLocaleString()}`,
+      `Issues found: ${scan.issues?.length || 0}`,
+    ];
+
+    if (scan.metrics?.fetchTime) {
+      lines.push(`Response time: ${scan.metrics.fetchTime}ms`);
+    }
+
+    if (scan.metrics?.uptimePercentage) {
+      lines.push(`Uptime: ${scan.metrics.uptimePercentage}`);
+    }
+
+    if (scan.data?.summary) {
+      lines.push(`Summary: ${scan.data.summary}`);
+    }
+
+    return lines.join('\n');
+  };
 
   return (
     <div className="relative flex h-auto min-h-screen w-full flex-col overflow-x-hidden">
@@ -345,6 +378,119 @@ export default function App() {
 
               {activeTab === 'overview' && (
                 <>
+                  <section className="bg-surface-dark rounded-xl border border-border-dark shadow-sm overflow-hidden">
+                    <div className="px-6 py-4 border-b border-border-dark flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <h3 className="text-text-main font-bold text-lg">Portfolio Overview</h3>
+                        <p className="text-text-muted text-sm">All websites uploaded by your account.</p>
+                      </div>
+                      <div className="text-sm text-text-muted">
+                        {filteredWebsites.length} of {websites.length} sites visible
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 p-6 border-b border-border-dark">
+                      <div className="rounded-xl border border-border-dark bg-background-light p-5">
+                        <p className="text-text-muted text-sm font-medium">Total Sites</p>
+                        <p className="text-text-main text-3xl font-bold mt-2">{totalSites}</p>
+                      </div>
+                      <div className="rounded-xl border border-border-dark bg-background-light p-5">
+                        <p className="text-text-muted text-sm font-medium">Healthy</p>
+                        <p className="text-emerald-700 text-3xl font-bold mt-2">{healthySites}</p>
+                        <p className="text-text-muted text-xs mt-2">
+                          {warningSites} warning, {criticalSites} critical
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border-dark bg-background-light p-5">
+                        <p className="text-text-muted text-sm font-medium">Average Health</p>
+                        <p className="text-text-main text-3xl font-bold mt-2">{averageHealthScore}/100</p>
+                      </div>
+                      <div className="rounded-xl border border-border-dark bg-background-light p-5">
+                        <p className="text-text-muted text-sm font-medium">Selected Site</p>
+                        <p className="text-text-main text-lg font-bold mt-2 truncate">
+                          {selectedWebsite?.name || 'None selected'}
+                        </p>
+                        <p className="text-text-muted text-xs mt-2 truncate">
+                          {selectedWebsite?.url || 'Choose a site to inspect details'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="bg-background-light text-text-muted">
+                          <tr>
+                            <th className="px-6 py-3 font-medium">Site</th>
+                            <th className="px-6 py-3 font-medium">Status</th>
+                            <th className="px-6 py-3 font-medium">Health</th>
+                            <th className="px-6 py-3 font-medium">Last Scan</th>
+                            <th className="px-6 py-3 font-medium">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border-dark">
+                          {filteredWebsites.map((website) => (
+                            <tr
+                              key={website.id}
+                              className={`transition-colors hover:bg-background-light ${
+                                selectedWebsite?.id === website.id ? 'bg-primary/5' : ''
+                              }`}
+                            >
+                              <td className="px-6 py-4">
+                                <div className="flex flex-col">
+                                  <span className="text-text-main font-semibold">{website.name}</span>
+                                  <span className="text-text-muted text-xs break-all">{website.url}</span>
+                                </div>
+                              </td>
+                              <td className="px-6 py-4">
+                                <span
+                                  className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium uppercase ${
+                                    website.status === 'healthy'
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : website.status === 'warning'
+                                      ? 'bg-amber-100 text-amber-700'
+                                      : 'bg-rose-100 text-rose-700'
+                                  }`}
+                                >
+                                  {website.status}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-text-main font-semibold">
+                                {website.health_score}/100
+                              </td>
+                              <td className="px-6 py-4 text-text-muted">
+                                {website.last_scan ? new Date(website.last_scan).toLocaleString() : 'Never'}
+                              </td>
+                              <td className="px-6 py-4">
+                                <button
+                                  onClick={() => setSelectedWebsite(website)}
+                                  className="rounded-lg border border-border-dark bg-white px-3 py-1.5 text-sm font-semibold text-text-main hover:bg-background-light"
+                                >
+                                  View Details
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          {filteredWebsites.length === 0 && (
+                            <tr>
+                              <td colSpan="5" className="px-6 py-8 text-center text-text-muted">
+                                No sites match your current search.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-text-main font-bold text-lg">Selected Site Snapshot</h3>
+                      <p className="text-text-muted text-sm">
+                        Detailed overview for {selectedWebsite.name}
+                      </p>
+                    </div>
+                  </div>
+
                   {/* Quick Stats Grid */}
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="bg-surface-dark rounded-xl p-6 border border-border-dark shadow-sm group hover:border-accent transition-colors">
@@ -392,14 +538,18 @@ export default function App() {
                         </thead>
                         <tbody className="divide-y divide-border-dark">
                           {scans.slice(0, 10).map(scan => (
-                            <tr key={scan.id} className="hover:bg-background-light transition-colors">
-                              <td className="px-6 py-4 text-text-muted">
+                            <tr
+                              key={scan.id}
+                              className="hover:bg-background-light transition-colors"
+                              title={getScanHoverText(scan)}
+                            >
+                              <td className="px-6 py-4 text-text-muted" title={getScanHoverText(scan)}>
                                 {new Date(scan.created_at).toLocaleString()}
                               </td>
-                              <td className="px-6 py-4 text-text-main font-medium capitalize">
+                              <td className="px-6 py-4 text-text-main font-medium capitalize" title={getScanHoverText(scan)}>
                                 {scan.scan_type} Agent
                               </td>
-                              <td className="px-6 py-4">
+                              <td className="px-6 py-4" title={getScanHoverText(scan)}>
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium 
                                   ${scan.status === 'success' ? 'bg-emerald-100 text-emerald-700' : 
                                     scan.status === 'error' ? 'bg-rose-100 text-rose-700' : 
@@ -407,7 +557,7 @@ export default function App() {
                                   {scan.status}
                                 </span>
                               </td>
-                              <td className="px-6 py-4 text-text-muted">
+                              <td className="px-6 py-4 text-text-muted" title={getScanHoverText(scan)}>
                                 {scan.issues.length} Issues
                               </td>
                             </tr>
