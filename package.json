@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "AI-powered website maintenance system for startups",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "concurrently \"cd siteward-backend && npm run dev\" \"cd siteward-frontend && npm run dev\"",
     "build": "npm run build --prefix siteward-backend && npm run build --prefix siteward-frontend",
