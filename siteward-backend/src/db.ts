@@ -38,6 +38,11 @@ export interface Issue {
   created_at: string;
 }
 
+export interface IssueTrackingMeta {
+  source?: string;
+  fingerprint?: string;
+}
+
 export async function initializeDatabase() {
   try {
     // Websites table
@@ -159,8 +164,80 @@ export async function createIssue(
   severity: string,
   title: string,
   description: string,
-  fixSuggestion?: Record<string, any>
+  fixSuggestion?: Record<string, any>,
+  tracking?: IssueTrackingMeta
 ) {
+  const fingerprint = tracking?.fingerprint || `${type}:${title}`.toLowerCase();
+  const source = tracking?.source || 'unknown';
+  const now = new Date().toISOString();
+
+  const payload = {
+    ...(fixSuggestion || {}),
+    _source: source,
+    _fingerprint: fingerprint,
+    _last_seen: now,
+  };
+
+  // Dedupe by unresolved issue fingerprint for this website
+  const { data: existing, error: existingErr } = await supabase
+    .from('issues')
+    .select('id,status,fix_suggestion,created_at')
+    .eq('website_id', websiteId)
+    .eq('type', type)
+    .in('status', ['open', 'in_progress'])
+    .contains('fix_suggestion', { _fingerprint: fingerprint })
+    .order('created_at', { ascending: false });
+
+  if (existingErr) throw existingErr;
+
+  // Backward-compatible fallback for older issues that were created without tracking metadata
+  let matchedExisting = existing;
+  if (!matchedExisting || matchedExisting.length === 0) {
+    const { data: legacyExisting, error: legacyErr } = await supabase
+      .from('issues')
+      .select('id,status,fix_suggestion,created_at')
+      .eq('website_id', websiteId)
+      .eq('type', type)
+      .eq('title', title)
+      .in('status', ['open', 'in_progress'])
+      .order('created_at', { ascending: false });
+
+    if (legacyErr) throw legacyErr;
+    matchedExisting = legacyExisting || [];
+  }
+
+  if (matchedExisting && matchedExisting.length > 0) {
+    const newest = matchedExisting[0];
+
+    // Resolve any extra duplicates that were already open
+    if (matchedExisting.length > 1) {
+      const duplicateIds = matchedExisting.slice(1).map((i: any) => i.id);
+      if (duplicateIds.length > 0) {
+        const { error: dedupeErr } = await supabase
+          .from('issues')
+          .update({ status: 'resolved', resolved_at: now })
+          .in('id', duplicateIds);
+        if (dedupeErr) throw dedupeErr;
+      }
+    }
+
+    const { data: updated, error: updateErr } = await supabase
+      .from('issues')
+      .update({
+        severity,
+        title,
+        description,
+        fix_suggestion: payload,
+        status: newest.status === 'in_progress' ? 'in_progress' : 'open',
+        resolved_at: null,
+      })
+      .eq('id', newest.id)
+      .select();
+
+    if (updateErr) throw updateErr;
+    return updated[0];
+  }
+
   const { data, error } = await supabase
     .from('issues')
     .insert([
@@ -170,7 +247,7 @@ export async function createIssue(
         severity,
         title,
         description,
-        fix_suggestion: fixSuggestion,
+        fix_suggestion: payload,
         status: 'open',
       },
     ])
@@ -178,4 +255,78 @@ export async function createIssue(
 
   if (error) throw error;
   return data[0];
+}
+
+export async function resolveStaleIssues(
+  websiteId: string,
+  source: string,
+  activeFingerprints: string[]
+) {
+  const { data: trackedIssues, error } = await supabase
+    .from('issues')
+    .select('id,fix_suggestion,status')
+    .eq('website_id', websiteId)
+    .in('status', ['open', 'in_progress'])
+    .contains('fix_suggestion', { _source: source });
+
+  if (error) throw error;
+  if (!trackedIssues || trackedIssues.length === 0) return { resolved: 0 };
+
+  const activeSet = new Set(activeFingerprints);
+  const staleIds = trackedIssues
+    .filter((issue: any) => {
+      const fp = issue?.fix_suggestion?._fingerprint;
+      return typeof fp === 'string' && !activeSet.has(fp);
+    })
+    .map((issue: any) => issue.id);
+
+  if (staleIds.length === 0) return { resolved: 0 };
+
+  const { error: updateErr } = await supabase
+    .from('issues')
+    .update({
+      status: 'resolved',
+      resolved_at: new Date().toISOString(),
+    })
+    .in('id', staleIds);
+
+  if (updateErr) throw updateErr;
+  return { resolved: staleIds.length };
+}
+
+export async function collapseDuplicateOpenIssues(websiteId: string) {
+  const { data: issues, error } = await supabase
+    .from('issues')
+    .select('id,type,title,status,created_at')
+    .eq('website_id', websiteId)
+    .in('status', ['open', 'in_progress'])
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  if (!issues || issues.length === 0) return { resolved: 0 };
+
+  const seen = new Set<string>();
+  const duplicateIds: string[] = [];
+
+  for (const issue of issues as any[]) {
+    const key = `${issue.type}::${issue.title}`.toLowerCase();
+    if (seen.has(key)) {
+      duplicateIds.push(issue.id);
+    } else {
+      seen.add(key);
+    }
+  }
+
+  if (duplicateIds.length === 0) return { resolved: 0 };
+
+  const { error: updateErr } = await supabase
+    .from('issues')
+    .update({
+      status: 'resolved',
+      resolved_at: new Date().toISOString(),
+    })
+    .in('id', duplicateIds);
+
+  if (updateErr) throw updateErr;
+  return { resolved: duplicateIds.length };
 }

@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { supabase, saveScanResult, createIssue } from '../db';
+import { saveScanResult, createIssue, resolveStaleIssues } from '../db';
+import * as cheerio from 'cheerio';
 
 export class PerformanceAgent {
   private websiteUrl: string;
@@ -12,68 +13,143 @@ export class PerformanceAgent {
 
   async scan() {
     try {
-      console.log(`[PerformanceAgent] Analyzing performance for ${this.websiteUrl}`);
-      
+      console.log(`[PerformanceAgent] Analyzing ${this.websiteUrl}`);
+      const source = 'performance_agent';
+      const activeIssueFingerprints = new Set<string>();
+
       const issues: string[] = [];
       const data: Record<string, any> = {
         timestamp: new Date().toISOString(),
         url: this.websiteUrl,
       };
 
-      // Simulate Lighthouse score (in production, use real Lighthouse API)
-      const lighthouseScore = await this.getLighthouseScore();
-      data.lighthouse = lighthouseScore;
-
-      if (lighthouseScore.performance < 50) {
-        issues.push('Performance score is poor (< 50)');
-      }
-      if (lighthouseScore.accessibility < 80) {
-        issues.push('Accessibility score needs improvement');
-      }
-
-      // Check for image optimization opportunities
-      const imageOptimizations = await this.analyzeImages();
-      if (imageOptimizations.unoptimizedImages > 0) {
-        issues.push(`${imageOptimizations.unoptimizedImages} images need optimization`);
-        data.imageOptimizations = imageOptimizations;
-      }
-
-      // Check SSL/TLS and DNS
-      const sslDns = await this.checkSSLAndDNS();
-      data.sslDns = sslDns;
-      if (sslDns.sslIssue) {
-        issues.push('SSL/TLS certificate issue detected');
-      }
-      if (sslDns.dnsIssue) {
-        issues.push('DNS resolution issue detected');
+      // Fetch the page
+      const t0 = Date.now();
+      let html = '';
+      let headers: Record<string, string> = {};
+      try {
+        const res = await axios.get(this.websiteUrl, {
+          timeout: 15000,
+          headers: { 'User-Agent': 'SiteWard-Perf/1.0' },
+        });
+        html = res.data;
+        headers = res.headers as Record<string, string>;
+        data.fetchTime = Date.now() - t0;
+      } catch (err: any) {
+        data.error = err.message;
+        issues.push('Could not fetch page for performance analysis');
+        await saveScanResult(this.websiteId, 'performance', 'error', data, issues);
+        return { status: 'error', issues, data };
       }
 
-      // Check for slow-loading components
-      const slowComponents = await this.detectSlowComponents();
-      if (slowComponents.length > 0) {
-        issues.push(`${slowComponents.length} slow-loading components detected`);
-        data.slowComponents = slowComponents;
+      const $ = cheerio.load(html);
+
+      // ── 1. SSL Check ─────────────────────────────────────────────────────
+      const ssl = this.checkSSL(this.websiteUrl);
+      data.ssl = ssl;
+      if (!ssl.isHttps) {
+        issues.push('Site is not served over HTTPS');
+        const fp = 'perf:no-https';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'security', 'critical',
+          'No HTTPS',
+          'The site is served over HTTP. All sites should use HTTPS to protect user data.',
+          ssl,
+          { source, fingerprint: fp }
+        );
       }
+
+      // ── 2. Compression check ──────────────────────────────────────────────
+      const encoding = headers['content-encoding'] || '';
+      data.compression = { encoding, compressed: !!encoding };
+      if (!encoding) {
+        issues.push('HTTP response is not compressed (gzip/br recommended)');
+        const fp = 'perf:no-compression';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'performance', 'medium',
+          'No HTTP Compression',
+          'Enable gzip or Brotli compression to reduce page transfer size.',
+          { encoding: 'none' },
+          { source, fingerprint: fp }
+        );
+      }
+
+      // ── 3. Caching headers ────────────────────────────────────────────────
+      const cacheControl = headers['cache-control'] || '';
+      const hasCache = !!cacheControl && !cacheControl.includes('no-store');
+      data.caching = { cacheControl, hasCache };
+      if (!hasCache) {
+        issues.push('No cache-control headers — browsers cannot cache the page');
+        const fp = 'perf:missing-cache-control';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'performance', 'low',
+          'Missing Cache-Control Headers',
+          'Add Cache-Control headers to let browsers cache static resources.',
+          { cacheControl },
+          { source, fingerprint: fp }
+        );
+      }
+
+      // ── 4. Image analysis ─────────────────────────────────────────────────
+      const imageAnalysis = await this.analyzeImages($, html);
+      data.images = imageAnalysis;
+      if (imageAnalysis.unoptimized.length > 0) {
+        issues.push(`${imageAnalysis.unoptimized.length} image(s) could be optimised (no lazy-load / wrong format)`);
+        const fp = 'perf:unoptimized-images';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'performance', 'medium',
+          `${imageAnalysis.unoptimized.length} Unoptimised Image(s)`,
+          `Images without lazy loading or in non-modern formats: ${imageAnalysis.unoptimized.slice(0, 3).join(', ')}`,
+          { images: imageAnalysis.unoptimized },
+          { source, fingerprint: fp }
+        );
+      }
+
+      // ── 5. Render-blocking resources ──────────────────────────────────────
+      const blocking = this.checkBlockingResources($);
+      data.blocking = blocking;
+      if (blocking.blockingScripts > 0) {
+        issues.push(`${blocking.blockingScripts} render-blocking <script> tag(s) in <head>`);
+        const fp = 'perf:render-blocking-scripts';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'performance', 'medium',
+          'Render-Blocking Scripts',
+          `${blocking.blockingScripts} synchronous scripts in <head> delay page rendering. Use defer or async.`,
+          blocking,
+          { source, fingerprint: fp }
+        );
+      }
+
+      // ── 6. Page weight ────────────────────────────────────────────────────
+      const pageSizeKB = Math.round(Buffer.byteLength(html, 'utf8') / 1024);
+      data.pageSizeKB = pageSizeKB;
+      if (pageSizeKB > 500) {
+        issues.push(`HTML page is large: ${pageSizeKB}KB (aim for < 500KB)`);
+      }
+
+      // ── 7. Inline script / style bloat ───────────────────────────────────
+      const inlineStyles = $('style').length;
+      const inlineScripts = $('script:not([src])').length;
+      data.inline = { inlineStyles, inlineScripts };
+      if (inlineStyles + inlineScripts > 10) {
+        issues.push(`${inlineStyles + inlineScripts} inline style/script blocks detected (prefer external files)`);
+      }
+
+      await resolveStaleIssues(this.websiteId, source, Array.from(activeIssueFingerprints));
 
       await saveScanResult(
         this.websiteId,
         'performance',
         issues.length === 0 ? 'success' : 'warning',
         data,
-        issues
+        issues,
+        { pageSizeKB, compressed: !!encoding }
       );
-
-      // Create issues
-      for (const img of imageOptimizations.unoptimizedList || []) {
-        await createIssue(
-          this.websiteId,
-          'performance',
-          'medium',
-          `Image optimization: ${img}`,
-          'This image could be compressed or converted to WebP format',
-          { type: 'image_optimization', filename: img }
-        );
-      }
 
       return {
         status: issues.length === 0 ? 'success' : 'warning',
@@ -84,56 +160,71 @@ export class PerformanceAgent {
       console.error('[PerformanceAgent] Error:', error);
       return {
         status: 'error',
-        issues: ['Failed to analyze performance'],
+        issues: ['Failed to analyse performance'],
         error: (error as Error).message,
       };
     }
   }
 
-  private async getLighthouseScore() {
-    // Simulated Lighthouse score - in production use real Lighthouse API
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  private checkSSL(url: string) {
+    try {
+      const parsed = new URL(url);
+      return { isHttps: parsed.protocol === 'https:', protocol: parsed.protocol };
+    } catch {
+      return { isHttps: false, error: 'Invalid URL' };
+    }
+  }
+
+  private async analyzeImages($: cheerio.CheerioAPI, html: string) {
+    const unoptimized: string[] = [];
+    let total = 0;
+
+    $('img').each((_, el) => {
+      total++;
+      const src = $(el).attr('src') || '';
+      const loading = $(el).attr('loading');
+      const srcset = $(el).attr('srcset');
+
+      // Flag if no lazy loading AND no srcset (old-style)
+      const isLazyLoaded = loading === 'lazy';
+      const isModernFormat = src.endsWith('.webp') || src.endsWith('.avif');
+
+      if (!isLazyLoaded && !srcset && !isModernFormat && src) {
+        unoptimized.push(src);
+      }
+    });
+
     return {
-      performance: Math.round(Math.random() * 100),
-      accessibility: Math.round(Math.random() * 100),
-      bestPractices: Math.round(Math.random() * 100),
-      seo: Math.round(Math.random() * 100),
-      pwa: Math.round(Math.random() * 100),
+      total,
+      unoptimized: unoptimized.slice(0, 20), // cap list
+      unoptimizedCount: unoptimized.length,
     };
   }
 
-  private async analyzeImages() {
-    // Simulated image analysis
-    const unoptimizedCount = Math.floor(Math.random() * 5);
-    const unoptimizedImages = Array.from({ length: unoptimizedCount }, (_, i) => 
-      `image-${i + 1}.jpg`
-    );
+  private checkBlockingResources($: cheerio.CheerioAPI) {
+    let blockingScripts = 0;
+    let deferredScripts = 0;
+    let asyncScripts = 0;
 
-    return {
-      totalImages: Math.floor(Math.random() * 20) + 5,
-      unoptimizedImages: unoptimizedCount,
-      unoptimizedList: unoptimizedImages,
-      potentialSavings: `${Math.floor(Math.random() * 500 + 100)}KB`,
-    };
-  }
+    $('head script').each((_, el) => {
+      const defer = $(el).attr('defer');
+      const asyncAttr = $(el).attr('async');
+      const src = $(el).attr('src');
+      if (src) { // external scripts only
+        if (defer !== undefined) { deferredScripts++; }
+        else if (asyncAttr !== undefined) { asyncScripts++; }
+        else { blockingScripts++; }
+      }
+    });
 
-  private async checkSSLAndDNS() {
-    // Simulated SSL/DNS check
-    return {
-      sslValid: true,
-      sslIssue: false,
-      expiryDate: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
-      dnsResolvable: true,
-      dnsIssue: false,
-      dnsProviders: ['8.8.8.8', '1.1.1.1'],
-    };
-  }
+    let blockingStyles = 0;
+    $('head link[rel="stylesheet"]').each((_, el) => {
+      const media = $(el).attr('media');
+      if (!media || media === 'all') blockingStyles++;
+    });
 
-  private async detectSlowComponents() {
-    // Simulated slow component detection
-    const slowCount = Math.floor(Math.random() * 3);
-    return Array.from({ length: slowCount }, (_, i) => ({
-      component: `Component-${i + 1}`,
-      loadTime: Math.floor(Math.random() * 5000 + 1000),
-    }));
+    return { blockingScripts, deferredScripts, asyncScripts, blockingStyles };
   }
 }

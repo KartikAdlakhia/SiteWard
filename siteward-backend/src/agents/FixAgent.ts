@@ -1,230 +1,282 @@
 import { Groq } from 'groq-sdk';
-import { supabase, createIssue, saveScanResult } from '../db';
-import axios from 'axios';
+import { supabase } from '../db';
 
 interface Issue {
   id: string;
   title: string;
   type: string;
+  severity: string;
   description: string;
   fix_suggestion?: Record<string, any>;
 }
 
+/**
+ * FixAgent — uses Groq AI to generate actionable fix suggestions for open issues.
+ * It does NOT auto-apply code (that requires GitHub access and is opt-in).
+ * Instead it enriches every issue with a detailed fix plan saved to Supabase.
+ */
 export class FixAgent {
   private websiteId: string;
-  private groq: Groq;
+  private groq: Groq | null;
   private githubToken: string;
 
   constructor(websiteId: string) {
     this.websiteId = websiteId;
-    this.groq = new Groq({
-      apiKey: process.env.GROQ_API_KEY,
-    });
     this.githubToken = process.env.GITHUB_TOKEN || '';
+    // Only initialise Groq if key is present
+    this.groq = process.env.GROQ_API_KEY
+      ? new Groq({ apiKey: process.env.GROQ_API_KEY })
+      : null;
   }
 
+  /**
+   * Fetch all open issues for the website and enrich each with an AI-generated
+   * fix suggestion stored back in Supabase's fix_suggestion JSONB field.
+   */
   async processIssues() {
     try {
       console.log(`[FixAgent] Processing issues for website ${this.websiteId}`);
 
-      // Get all open issues
       const { data: issues, error } = await supabase
         .from('issues')
         .select('*')
         .eq('website_id', this.websiteId)
-        .eq('status', 'open');
+        .eq('status', 'open')
+        .order('created_at', { ascending: false });
 
       if (error) throw error;
+      if (!issues || issues.length === 0) {
+        console.log('[FixAgent] No open issues to process');
+        return { status: 'success', processedIssues: 0, results: [] };
+      }
 
       const results: any[] = [];
 
-      for (const issue of issues || []) {
-        const fix = await this.generateFix(issue);
-        
-        if (fix.canAutoFix) {
-          // Auto-fix simple issues
-          const prUrl = await this.createGitHubPR(issue, fix);
-          results.push({
-            issueId: issue.id,
-            autoFixed: true,
-            prUrl,
-          });
-
-          // Update issue status
-          await supabase
-            .from('issues')
-            .update({
-              status: 'in_progress',
-              github_pr_url: prUrl,
-            })
-            .eq('id', issue.id);
-        } else {
-          // Store fix suggestion for review
-          results.push({
-            issueId: issue.id,
-            autoFixed: false,
-            fixSuggestion: fix.suggestion,
-          });
+      for (const issue of issues) {
+        // Skip if we already have a fix suggestion stored
+        if (issue.fix_suggestion && Object.keys(issue.fix_suggestion).length > 0) {
+          results.push({ issueId: issue.id, skipped: true, reason: 'fix already present' });
+          continue;
         }
+
+        const fix = await this.generateFix(issue);
+
+        // Persist the fix suggestion into Supabase
+        const { error: updateError } = await supabase
+          .from('issues')
+          .update({ fix_suggestion: fix })
+          .eq('id', issue.id);
+
+        if (updateError) {
+          console.error(`[FixAgent] Could not update issue ${issue.id}:`, updateError.message);
+        }
+
+        results.push({
+          issueId: issue.id,
+          issueTitle: issue.title,
+          fixGenerated: true,
+          canAutoFix: fix.canAutoFix,
+          fixType: fix.fixType,
+        });
       }
 
-      return {
-        status: 'success',
-        processedIssues: results.length,
-        results,
-      };
+      console.log(`[FixAgent] Processed ${results.length} issue(s)`);
+      return { status: 'success', processedIssues: results.length, results };
     } catch (error) {
       console.error('[FixAgent] Error:', error);
-      return {
-        status: 'error',
-        error: (error as Error).message,
-      };
+      return { status: 'error', error: (error as Error).message };
     }
   }
 
-  private async generateFix(issue: Issue) {
-    try {
-      const prompt = `
-        Generate a fix for this website issue:
-        Type: ${issue.type}
-        Title: ${issue.title}
-        Description: ${issue.description}
-        
-        Respond in JSON format with:
-        {
-          "canAutoFix": boolean,
-          "fixType": "image_optimization|meta_tag|alt_text|code_cleanup",
-          "suggestion": "detailed explanation",
-          "codeChanges": "git diff or code snippet if applicable"
-        }
-      `;
+  /**
+   * Generate a fix suggestion for a single issue.
+   * Uses Groq when available, falls back to rule-based defaults.
+   */
+  private async generateFix(issue: Issue): Promise<Record<string, any>> {
+    if (this.groq) {
+      try {
+        const prompt = `You are a website maintenance expert. Generate a concise, actionable fix for this issue.
 
-      const message = await (this.groq as any).messages.create({
-        model: 'mixtral-8x7b-32768',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: prompt }],
-      });
+Issue Type: ${issue.type}
+Severity: ${issue.severity}
+Title: ${issue.title}
+Description: ${issue.description}
 
-      const content = message.content[0];
-      if (content.type === 'text') {
-        const parsed = JSON.parse(content.text);
+Return ONLY valid JSON in this exact shape:
+{
+  "canAutoFix": false,
+  "fixType": "meta_tag|image_optimization|alt_text|broken_link|security_header|code_cleanup|manual_review",
+  "priority": "immediate|soon|later",
+  "summary": "One-sentence fix description",
+  "steps": ["Step 1", "Step 2", "Step 3"],
+  "codeExample": "optional short code snippet or empty string",
+  "estimatedEffort": "5 minutes|30 minutes|1 hour|1 day"
+}`;
+
+        const response = await this.groq.chat.completions.create({
+          model: 'llama3-8b-8192',
+          max_tokens: 512,
+          temperature: 0.2,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+        });
+
+        const text = response.choices[0]?.message?.content || '{}';
+        const parsed = JSON.parse(text);
+
+        // Ensure required fields
         return {
-          canAutoFix: parsed.canAutoFix || false,
-          suggestion: parsed.suggestion,
-          fixType: parsed.fixType,
-          codeChanges: parsed.codeChanges,
+          canAutoFix: parsed.canAutoFix ?? false,
+          fixType: parsed.fixType ?? 'manual_review',
+          priority: parsed.priority ?? 'soon',
+          summary: parsed.summary ?? '',
+          steps: Array.isArray(parsed.steps) ? parsed.steps : [],
+          codeExample: parsed.codeExample ?? '',
+          estimatedEffort: parsed.estimatedEffort ?? 'unknown',
+          generatedBy: 'groq-llama3',
+          generatedAt: new Date().toISOString(),
         };
+      } catch (err) {
+        console.error(`[FixAgent] Groq error for issue ${issue.id}:`, (err as Error).message);
       }
-
-      // Fallback based on issue type
-      return this.getDefaultFix(issue.type);
-    } catch (error) {
-      console.error('Fix generation error:', error);
-      return this.getDefaultFix(issue.type);
     }
+
+    // Rule-based fallback
+    return this.getDefaultFix(issue.type, issue.severity);
   }
 
-  private getDefaultFix(issueType: string) {
-    const fixes: Record<string, any> = {
+  /**
+   * Rule-based fallback fixes — no AI required.
+   */
+  private getDefaultFix(issueType: string, severity: string): Record<string, any> {
+    const fixes: Record<string, Record<string, any>> = {
       broken_link: {
         canAutoFix: false,
-        suggestion: 'Review and update/remove broken links manually',
-        fixType: 'manual_review',
+        fixType: 'broken_link',
+        priority: 'soon',
+        summary: 'Update or remove the broken link',
+        steps: [
+          'Open your CMS or codebase and search for the broken URL',
+          'Either update it to the correct destination or remove the link',
+          'Re-run a scan to verify the fix',
+        ],
+        codeExample: '',
+        estimatedEffort: '15 minutes',
       },
       performance: {
-        canAutoFix: true,
-        suggestion: 'Compress images and optimize assets',
+        canAutoFix: false,
         fixType: 'image_optimization',
-        codeChanges: 'Add WebP format images and lazy loading',
+        priority: 'soon',
+        summary: 'Optimise images and enable compression',
+        steps: [
+          'Convert images to WebP format using tools like Squoosh or ImageMagick',
+          'Add loading="lazy" attribute to all below-the-fold images',
+          'Enable gzip or Brotli compression on your server / CDN',
+          'Verify with the Page Speed Insights tool',
+        ],
+        codeExample: '<img src="hero.webp" loading="lazy" alt="Hero image">',
+        estimatedEffort: '1 hour',
       },
       security: {
         canAutoFix: false,
-        suggestion: 'Review security findings and apply patches',
-        fixType: 'manual_review',
+        fixType: severity === 'critical' ? 'manual_review' : 'security_header',
+        priority: severity === 'critical' ? 'immediate' : 'soon',
+        summary: 'Apply recommended security configuration',
+        steps: [
+          'Identify the specific security finding from the issue description',
+          'If it is a missing header: add it in your server config (Nginx/Apache/.htaccess) or CDN',
+          'If it is an exposed secret: remove it from the codebase immediately and rotate the credential',
+          'Re-scan to verify the fix',
+        ],
+        codeExample: '# Nginx example\nadd_header X-Content-Type-Options "nosniff";\nadd_header X-Frame-Options "SAMEORIGIN";\nadd_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;',
+        estimatedEffort: '30 minutes',
       },
       seo: {
-        canAutoFix: true,
-        suggestion: 'Add missing meta tags and alt text',
+        canAutoFix: false,
         fixType: 'meta_tag',
-        codeChanges: 'Update HTML head and img elements',
+        priority: 'soon',
+        summary: 'Add or improve meta tags for SEO',
+        steps: [
+          'Open your page\'s HTML <head> section',
+          'Add a descriptive <title> tag (10–60 characters)',
+          'Add a meta description (50–160 characters)',
+          'Add Open Graph tags for social sharing',
+        ],
+        codeExample: '<title>Your Page Title — Brand Name</title>\n<meta name="description" content="Concise page description here.">\n<meta property="og:title" content="Your Page Title">\n<meta property="og:description" content="Concise page description.">',
+        estimatedEffort: '15 minutes',
+      },
+      monitor: {
+        canAutoFix: false,
+        fixType: 'manual_review',
+        priority: 'immediate',
+        summary: 'Investigate and restore site availability',
+        steps: [
+          'Check your hosting provider\'s status page',
+          'Review server error logs',
+          'Verify DNS configuration is correct',
+          'Contact your hosting provider if the issue persists',
+        ],
+        codeExample: '',
+        estimatedEffort: '1 hour',
       },
     };
 
-    return fixes[issueType] || fixes.security;
+    const fix = fixes[issueType] || {
+      canAutoFix: false,
+      fixType: 'manual_review',
+      priority: 'soon',
+      summary: 'Manual review required',
+      steps: ['Investigate the issue description and apply the appropriate fix'],
+      codeExample: '',
+      estimatedEffort: 'unknown',
+    };
+
+    return { ...fix, generatedBy: 'rule-based', generatedAt: new Date().toISOString() };
   }
 
-  private async createGitHubPR(issue: Issue, fix: any) {
-    if (!this.githubToken) {
-      console.log('[FixAgent] GitHub token not configured, skipping PR creation');
-      return 'https://github.com/example/repo/pull/0';
-    }
+  /**
+   * Generate a rollback plan for a specific issue (used by the API route).
+   */
+  async createRollbackPlan(issue: Issue): Promise<Record<string, any>> {
+    if (this.groq) {
+      try {
+        const prompt = `Create a step-by-step rollback plan for reverting this website fix:
 
-    try {
-      const prBody = `
-## Fix for: ${issue.title}
+Issue type: ${issue.type}
+Issue title: ${issue.title}
 
-**Issue Type:** ${issue.type}
+Return ONLY valid JSON:
+{
+  "steps": ["step1", "step2"],
+  "estimatedTime": "5 minutes",
+  "risk": "low|medium|high",
+  "backupRequired": true
+}`;
 
-**Description:**
-${issue.description}
+        const response = await this.groq.chat.completions.create({
+          model: 'llama3-8b-8192',
+          max_tokens: 256,
+          temperature: 0.2,
+          messages: [{ role: 'user', content: prompt }],
+          response_format: { type: 'json_object' },
+        });
 
-**Solution:**
-${fix.suggestion}
-
-${fix.codeChanges ? `**Code Changes:**\n\`\`\`\n${fix.codeChanges}\n\`\`\`` : ''}
-
----
-Generated by SiteWard Fix Agent
-`;
-
-      // Note: This would need proper GitHub API setup with actual repo info
-      // For now, return a placeholder PR URL
-      return `https://github.com/siteward-ai/fixes/pull/${Math.floor(Math.random() * 1000)}`;
-    } catch (error) {
-      console.error('GitHub PR creation error:', error);
-      return 'https://github.com/siteward-ai/fixes/pull/error';
-    }
-  }
-
-  async createRollbackPlan(issue: Issue) {
-    try {
-      const prompt = `
-        Create a rollback plan for this fix:
-        Issue: ${issue.title}
-        Type: ${issue.type}
-        
-        Provide steps to revert the fix if needed.
-        Response format:
-        {
-          "steps": ["step1", "step2", ...],
-          "estimatedTime": "5 minutes",
-          "risk": "low|medium|high"
-        }
-      `;
-
-      const message = await (this.groq as any).messages.create({
-        model: 'mixtral-8x7b-32768',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
-      });
-
-      const content = message.content[0];
-      if (content.type === 'text') {
-        return JSON.parse(content.text);
+        const text = response.choices[0]?.message?.content || '{}';
+        return JSON.parse(text);
+      } catch (err) {
+        console.error('[FixAgent] Rollback plan error:', err);
       }
-
-      return {
-        steps: ['Revert to previous version', 'Run tests', 'Deploy'],
-        estimatedTime: '5 minutes',
-        risk: 'low',
-      };
-    } catch (error) {
-      console.error('Rollback plan error:', error);
-      return {
-        steps: ['Manual rollback required'],
-        estimatedTime: 'Unknown',
-        risk: 'high',
-      };
     }
+
+    return {
+      steps: [
+        'Restore from the most recent backup of the site',
+        'Verify the site is accessible and functioning correctly',
+        'Re-run a SiteWard scan to confirm the rollback was successful',
+      ],
+      estimatedTime: '10 minutes',
+      risk: 'low',
+      backupRequired: true,
+    };
   }
 }

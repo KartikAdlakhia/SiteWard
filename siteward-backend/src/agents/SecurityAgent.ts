@@ -1,7 +1,52 @@
 import axios from 'axios';
-import { supabase, createIssue, saveScanResult } from '../db';
+import { saveScanResult, createIssue, resolveStaleIssues } from '../db';
 import * as cheerio from 'cheerio';
-import CryptoJS from 'crypto-js';
+
+// Security headers every site should have
+const REQUIRED_HEADERS: Record<string, { severity: 'low' | 'medium' | 'high' | 'critical'; description: string }> = {
+  'strict-transport-security': {
+    severity: 'high',
+    description: 'HSTS is missing. Browsers cannot enforce HTTPS for future visits.',
+  },
+  'content-security-policy': {
+    severity: 'high',
+    description: 'No Content-Security-Policy. The site is vulnerable to XSS and injection attacks.',
+  },
+  'x-content-type-options': {
+    severity: 'medium',
+    description: 'X-Content-Type-Options header is missing. Enable nosniff to prevent MIME-type sniffing.',
+  },
+  'x-frame-options': {
+    severity: 'medium',
+    description: 'X-Frame-Options header is missing. The site may be embeddable in iframes (clickjacking risk).',
+  },
+  'referrer-policy': {
+    severity: 'low',
+    description: 'Referrer-Policy header is missing. User navigation data may leak to third parties.',
+  },
+  'permissions-policy': {
+    severity: 'low',
+    description: 'Permissions-Policy header missing. Consider restricting camera/mic/geolocation APIs.',
+  },
+};
+
+// Patterns that may indicate hardcoded secrets in the HTML source
+const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp; severity: 'high' | 'critical' }> = [
+  { name: 'Stripe Live Key',     pattern: /sk_live_[A-Za-z0-9]{24,}/,        severity: 'critical' },
+  { name: 'AWS Access Key',      pattern: /AKIA[0-9A-Z]{16}/,                 severity: 'critical' },
+  { name: 'GitHub Token',        pattern: /ghp_[A-Za-z0-9_]{36}/,            severity: 'critical' },
+  { name: 'Generic API Key',     pattern: /api[_-]?key["']?\s*[:=]\s*["'][A-Za-z0-9_-]{20,}/i, severity: 'high' },
+  { name: 'Private Key Header',  pattern: /-----BEGIN (RSA|EC|PRIVATE) KEY/, severity: 'critical' },
+  { name: 'Firebase Config',     pattern: /apiKey:\s*["'][A-Za-z0-9_-]{30,}["']/, severity: 'high' },
+];
+
+// Patterns that may indicate XSS-prone code in the HTML
+const XSS_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
+  { name: 'eval() usage',               pattern: /\beval\s*\(/g },
+  { name: 'document.write() usage',     pattern: /document\.write\s*\(/g },
+  { name: 'innerHTML assignment',        pattern: /\.innerHTML\s*=/g },
+  { name: 'Unencoded URL param in DOM', pattern: /location\.(search|hash)\s*[^=]?=/g },
+];
 
 export class SecurityAgent {
   private websiteUrl: string;
@@ -14,48 +59,130 @@ export class SecurityAgent {
 
   async scan() {
     try {
-      console.log(`[SecurityAgent] Scanning security for ${this.websiteUrl}`);
-      
+      console.log(`[SecurityAgent] Scanning ${this.websiteUrl}`);
+      const source = 'security_agent';
+      const activeIssueFingerprints = new Set<string>();
+
       const issues: string[] = [];
       const data: Record<string, any> = {
         timestamp: new Date().toISOString(),
         url: this.websiteUrl,
       };
 
-      // Check HTTPS enforcement
-      const httpsCheck = await this.checkHTTPSEnforcement();
-      data.httpsStatus = httpsCheck;
-      if (!httpsCheck.enforced) {
-        issues.push('HTTPS is not properly enforced');
+      // Fetch page and headers
+      let html = '';
+      let responseHeaders: Record<string, string> = {};
+      let finalUrl = this.websiteUrl;
+      try {
+        const res = await axios.get(this.websiteUrl, {
+          timeout: 15000,
+          maxRedirects: 5,
+          headers: { 'User-Agent': 'SiteWard-Security/1.0' },
+          validateStatus: () => true,
+        });
+        html = res.data;
+        responseHeaders = res.headers as Record<string, string>;
+        finalUrl = res.request?.res?.responseUrl || this.websiteUrl;
+      } catch (err: any) {
+        data.error = err.message;
+        issues.push('Could not fetch page for security analysis');
+        await saveScanResult(this.websiteId, 'security', 'error', data, issues);
+        return { status: 'error', issues, data };
       }
 
-      // Check for exposed API keys
-      const exposedKeys = await this.scanForExposedKeys();
-      if (exposedKeys.length > 0) {
-        issues.push(`Found ${exposedKeys.length} potential exposed API keys`);
-        data.exposedKeys = exposedKeys;
+      // ── 1. HTTPS enforcement ─────────────────────────────────────────────
+      const httpsCheck = this.checkHTTPS(this.websiteUrl, finalUrl);
+      data.https = httpsCheck;
+      if (!httpsCheck.isHttps) {
+        issues.push('Site not served over HTTPS');
+        const fp = 'security:not-https';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'security', 'critical',
+          'Site Is Not on HTTPS',
+          'All traffic should be served over HTTPS to protect data integrity and user privacy.',
+          httpsCheck,
+          { source, fingerprint: fp }
+        );
+      }
+      if (!httpsCheck.redirectsToHttps && httpsCheck.isHttps === false) {
+        issues.push('HTTP does not redirect to HTTPS');
       }
 
-      // Check for XSS vulnerabilities
-      const xssVulns = await this.scanForXSSVulnerabilities();
-      if (xssVulns.length > 0) {
-        issues.push(`Found ${xssVulns.length} potential XSS vulnerabilities`);
-        data.xssVulnerabilities = xssVulns;
+      // ── 2. Security headers (real header check) ──────────────────────────
+      const headerResults = this.checkSecurityHeaders(responseHeaders);
+      data.securityHeaders = headerResults;
+      for (const missing of headerResults.missing) {
+        const meta = REQUIRED_HEADERS[missing.toLowerCase()];
+        if (meta) {
+          issues.push(`Missing header: ${missing}`);
+          const fp = `security:missing-header:${missing.toLowerCase()}`;
+          activeIssueFingerprints.add(fp);
+          await createIssue(
+            this.websiteId, 'security', meta.severity,
+            `Missing Security Header: ${missing}`,
+            meta.description,
+            { header: missing },
+            { source, fingerprint: fp }
+          );
+        }
       }
 
-      // Check for defacement/malware
-      const malwareCheck = await this.checkForMalware();
-      if (malwareCheck.suspicious) {
-        issues.push('Suspicious content detected - possible defacement');
+      // ── 3. Exposed secrets in source ─────────────────────────────────────
+      const exposed = this.scanForSecrets(html);
+      data.exposedSecrets = exposed;
+      for (const secret of exposed) {
+        issues.push(`Possible exposed secret: ${secret.name}`);
+        const fp = `security:exposed-secret:${secret.name.toLowerCase()}`;
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'security', secret.severity,
+          `Possible Exposed Secret: ${secret.name}`,
+          `A pattern matching "${secret.name}" was found in the page source. Remove credentials from client-side code immediately.`,
+          { secretType: secret.name },
+          { source, fingerprint: fp }
+        );
       }
-      data.malwareStatus = malwareCheck;
 
-      // Check security headers
-      const securityHeaders = await this.checkSecurityHeaders();
-      data.securityHeaders = securityHeaders;
-      if (!securityHeaders.allPresent) {
-        issues.push('Missing recommended security headers');
+      // ── 4. XSS-prone patterns in inline scripts ────────────────────────
+      const xss = this.scanForXSS(html);
+      data.xssPatterns = xss;
+      if (xss.length > 0) {
+        issues.push(`${xss.length} potential XSS-prone pattern(s) detected in source`);
+        const fp = 'security:xss-patterns-detected';
+        activeIssueFingerprints.add(fp);
+        await createIssue(
+          this.websiteId, 'security', 'high',
+          'XSS-Prone Code Patterns Detected',
+          `Found patterns that may allow cross-site scripting: ${xss.map(x => x.name).join(', ')}`,
+          { patterns: xss },
+          { source, fingerprint: fp }
+        );
       }
+
+      // ── 5. Mixed content check ─────────────────────────────────────────
+      if (httpsCheck.isHttps) {
+        const mixed = this.checkMixedContent(html);
+        data.mixedContent = mixed;
+        if (mixed.count > 0) {
+          issues.push(`${mixed.count} mixed-content resource(s) loaded over HTTP on an HTTPS page`);
+          const fp = 'security:mixed-content-detected';
+          activeIssueFingerprints.add(fp);
+          await createIssue(
+            this.websiteId, 'security', 'medium',
+            'Mixed Content Detected',
+            `${mixed.count} resource(s) are loaded via HTTP on an HTTPS page. Browsers may block them.`,
+            mixed,
+            { source, fingerprint: fp }
+          );
+        }
+      }
+
+      // ── 6. External script domains ────────────────────────────────────
+      const $ = cheerio.load(html);
+      const externalScripts = this.listExternalScripts($);
+      data.externalScripts = externalScripts;
+      await resolveStaleIssues(this.websiteId, source, Array.from(activeIssueFingerprints));
 
       await saveScanResult(
         this.websiteId,
@@ -64,29 +191,6 @@ export class SecurityAgent {
         data,
         issues
       );
-
-      // Create critical issues
-      if (exposedKeys.length > 0) {
-        await createIssue(
-          this.websiteId,
-          'security',
-          'critical',
-          'Exposed API Keys Detected',
-          `Found ${exposedKeys.length} potential exposed API keys in source code`,
-          { exposedKeys }
-        );
-      }
-
-      if (xssVulns.length > 0) {
-        await createIssue(
-          this.websiteId,
-          'security',
-          'high',
-          'XSS Vulnerabilities Detected',
-          `Found ${xssVulns.length} potential XSS vulnerabilities`,
-          { vulnerabilities: xssVulns }
-        );
-      }
 
       return {
         status: issues.length === 0 ? 'success' : 'warning',
@@ -103,81 +207,85 @@ export class SecurityAgent {
     }
   }
 
-  private async checkHTTPSEnforcement() {
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  private checkHTTPS(requestedUrl: string, finalUrl: string) {
     try {
-      const url = new URL(this.websiteUrl);
-      const isHttps = url.protocol === 'https:';
-      
+      const parsed = new URL(requestedUrl);
+      const finalParsed = new URL(finalUrl);
       return {
-        enforced: isHttps,
-        protocol: url.protocol,
-        hasHSTS: Math.random() > 0.3,
+        isHttps: finalParsed.protocol === 'https:',
+        redirectsToHttps: parsed.protocol === 'http:' && finalParsed.protocol === 'https:',
+        protocol: finalParsed.protocol,
       };
     } catch {
-      return { enforced: false, error: 'Invalid URL' };
+      return { isHttps: false, redirectsToHttps: false, protocol: 'unknown' };
     }
   }
 
-  private async scanForExposedKeys() {
-    const patterns = [
-      /sk_live_[A-Za-z0-9]{24}/,
-      /api_key["\']?\s*[=:]\s*["\']?[A-Za-z0-9_-]{32}/i,
-      /aws_access_key["\']?\s*[=:]\s*["\']?AKIA[0-9A-Z]{16}/,
-      /github_token["\']?\s*[=:]\s*["\']?ghp_[A-Za-z0-9_]{36}/,
-    ];
+  private checkSecurityHeaders(headers: Record<string, string>) {
+    const lowerHeaders = Object.fromEntries(
+      Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v])
+    );
 
-    // Simulated key detection - in production, analyze actual source
-    const detected: string[] = [];
-    if (Math.random() > 0.8) {
-      detected.push('Potential Stripe API key in inline script');
-    }
-    
-    return detected;
-  }
+    const present: string[] = [];
+    const missing: string[] = [];
 
-  private async scanForXSSVulnerabilities() {
-    // Simulated XSS detection
-    const xssPatterns = [
-      'innerHTML without sanitization',
-      'eval() usage detected',
-      'document.write() in script',
-      'Unsanitized user input in HTML attribute',
-    ];
-
-    const detected: string[] = [];
-    if (Math.random() > 0.6) {
-      detected.push(xssPatterns[Math.floor(Math.random() * xssPatterns.length)]);
+    for (const header of Object.keys(REQUIRED_HEADERS)) {
+      if (lowerHeaders[header]) {
+        present.push(header);
+      } else {
+        missing.push(header);
+      }
     }
 
-    return detected;
-  }
-
-  private async checkForMalware() {
-    // Simulated malware/defacement check
     return {
-      suspicious: Math.random() > 0.95,
-      scanDate: new Date().toISOString(),
-      scanResult: 'clean',
+      present,
+      missing,
+      allPresent: missing.length === 0,
+      score: Math.round((present.length / Object.keys(REQUIRED_HEADERS).length) * 100),
     };
   }
 
-  private async checkSecurityHeaders() {
-    // Common security headers
-    const requiredHeaders = [
-      'Content-Security-Policy',
-      'X-Content-Type-Options',
-      'X-Frame-Options',
-      'Strict-Transport-Security',
-      'Referrer-Policy',
-    ];
+  private scanForSecrets(html: string) {
+    const found: Array<{ name: string; severity: 'high' | 'critical' }> = [];
+    for (const { name, pattern, severity } of SECRET_PATTERNS) {
+      if (pattern.test(html)) {
+        found.push({ name, severity });
+      }
+    }
+    return found;
+  }
 
-    // Simulated header check
-    const presentHeaders = requiredHeaders.filter(() => Math.random() > 0.4);
+  private scanForXSS(html: string) {
+    const found: Array<{ name: string }> = [];
+    for (const { name, pattern } of XSS_PATTERNS) {
+      if (pattern.test(html)) {
+        found.push({ name });
+      }
+    }
+    return found;
+  }
 
-    return {
-      allPresent: presentHeaders.length === requiredHeaders.length,
-      present: presentHeaders,
-      missing: requiredHeaders.filter(h => !presentHeaders.includes(h)),
-    };
+  private checkMixedContent(html: string) {
+    const httpResourcePattern = /(?:src|href|action)\s*=\s*["'](http:\/\/[^"']+)["']/gi;
+    const matches: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = httpResourcePattern.exec(html)) !== null) {
+      matches.push(m[1]);
+    }
+    return { count: matches.length, resources: matches.slice(0, 10) };
+  }
+
+  private listExternalScripts($: cheerio.CheerioAPI) {
+    const domains: Set<string> = new Set();
+    $('script[src]').each((_, el) => {
+      const src = $(el).attr('src') || '';
+      try {
+        const d = new URL(src).hostname;
+        domains.add(d);
+      } catch { /* relative – skip */ }
+    });
+    return Array.from(domains);
   }
 }
