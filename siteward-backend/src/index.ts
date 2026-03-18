@@ -35,10 +35,6 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
  * Authorization header. The anon client is used here just to verify the JWT.
  */
 async function getAuthUser(req: Request): Promise<{ id: string; email?: string }> {
-  // DEV BYPASS: Hardcoding the auth user to skip Supabase rate limits for now
-  return { id: '00000000-0000-0000-0000-000000000000', email: 'admin@siteward.local' };
-  
-  /*
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
@@ -48,7 +44,33 @@ async function getAuthUser(req: Request): Promise<{ id: string; email?: string }
   if (error || !data.user) throw new Error('Invalid or expired token');
 
   return data.user;
-  */
+}
+
+async function getOwnedWebsite(userId: string, websiteId: string) {
+  const { data, error } = await supabase
+    .from('websites')
+    .select('id, url, user_id')
+    .eq('id', websiteId)
+    .eq('user_id', userId)
+    .single();
+
+  if (error || !data) return null;
+  return data;
+}
+
+async function getOwnedIssue(userId: string, issueId: string) {
+  const { data: issue, error } = await supabase
+    .from('issues')
+    .select('*')
+    .eq('id', issueId)
+    .single();
+
+  if (error || !issue) return null;
+
+  const website = await getOwnedWebsite(userId, issue.website_id);
+  if (!website) return null;
+
+  return issue;
 }
 
 // Auth middleware factory — attach to protected routes
@@ -173,12 +195,19 @@ app.delete('/api/websites/:id', requireAuth, async (req: Request, res: Response)
 // Get scan results
 app.get('/api/websites/:id/scans', requireAuth, async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
     const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const websiteId = String(req.params.id);
+    const website = await getOwnedWebsite(user.id, websiteId);
+
+    if (!website) {
+      return res.status(404).json({ error: 'Website not found or not owned by you' });
+    }
 
     const { data, error } = await supabase
       .from('scan_results')
       .select('*')
-      .eq('website_id', req.params.id)
+      .eq('website_id', websiteId)
       .order('created_at', { ascending: false })
       .limit(limit);
 
@@ -192,12 +221,19 @@ app.get('/api/websites/:id/scans', requireAuth, async (req: Request, res: Respon
 // Get issues
 app.get('/api/websites/:id/issues', requireAuth, async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
     const { status, severity } = req.query;
+    const websiteId = String(req.params.id);
+    const website = await getOwnedWebsite(user.id, websiteId);
+
+    if (!website) {
+      return res.status(404).json({ error: 'Website not found or not owned by you' });
+    }
 
     let query = supabase
       .from('issues')
       .select('*')
-      .eq('website_id', req.params.id)
+      .eq('website_id', websiteId)
       .order('created_at', { ascending: false });
 
     if (status) query = query.eq('status', String(status));
@@ -241,10 +277,17 @@ app.post('/api/websites/:id/scan', requireAuth, async (req: Request, res: Respon
 // Update issue status
 app.patch('/api/issues/:id', requireAuth, async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
+    const issueId = String(req.params.id);
     const { status } = req.body;
     const allowed = ['open', 'in_progress', 'resolved', 'ignored'];
     if (!allowed.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${allowed.join(', ')}` });
+    }
+
+    const issue = await getOwnedIssue(user.id, issueId);
+    if (!issue) {
+      return res.status(404).json({ error: 'Issue not found or not owned by you' });
     }
 
     const updatePayload: Record<string, any> = { status };
@@ -253,7 +296,7 @@ app.patch('/api/issues/:id', requireAuth, async (req: Request, res: Response) =>
     const { data, error } = await supabase
       .from('issues')
       .update(updatePayload)
-      .eq('id', req.params.id)
+      .eq('id', issueId)
       .select()
       .single();
 
@@ -267,17 +310,15 @@ app.patch('/api/issues/:id', requireAuth, async (req: Request, res: Response) =>
 // Get fix suggestion for an issue
 app.get('/api/issues/:id/fix', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { data: issue, error } = await supabase
-      .from('issues')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
+    const user = (req as any).user;
+    const issueId = String(req.params.id);
+    const issue = await getOwnedIssue(user.id, issueId);
 
-    if (error || !issue) return res.status(404).json({ error: 'Issue not found' });
+    if (!issue) return res.status(404).json({ error: 'Issue not found or not owned by you' });
 
     // If a fix suggestion already exists, return it
     if (issue.fix_suggestion && Object.keys(issue.fix_suggestion).length > 0) {
-      return res.json({ issueId: req.params.id, fix: issue.fix_suggestion });
+      return res.json({ issueId, fix: issue.fix_suggestion });
     }
 
     // Otherwise generate one now
@@ -285,7 +326,7 @@ app.get('/api/issues/:id/fix', requireAuth, async (req: Request, res: Response) 
     const rollbackPlan = await fixAgent.createRollbackPlan(issue);
 
     res.json({
-      issueId: req.params.id,
+      issueId,
       rollbackPlan,
       message: 'Fix plan generated',
     });
@@ -297,19 +338,17 @@ app.get('/api/issues/:id/fix', requireAuth, async (req: Request, res: Response) 
 // Apply fix (trigger FixAgent for a specific issue's website)
 app.post('/api/issues/:id/fix', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { data: issue, error } = await supabase
-      .from('issues')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
+    const user = (req as any).user;
+    const issueId = String(req.params.id);
+    const issue = await getOwnedIssue(user.id, issueId);
 
-    if (error || !issue) return res.status(404).json({ error: 'Issue not found' });
+    if (!issue) return res.status(404).json({ error: 'Issue not found or not owned by you' });
 
     const fixAgent = new FixAgent(issue.website_id);
     const rollbackPlan = await fixAgent.createRollbackPlan(issue);
 
     res.json({
-      issueId: req.params.id,
+      issueId,
       rollbackPlan,
       message: 'Fix process initiated — review the rollback plan before applying',
     });
