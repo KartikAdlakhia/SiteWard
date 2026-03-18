@@ -1,7 +1,11 @@
 import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:5000/api' : '/api');
+
+if (!import.meta.env.VITE_API_URL && !import.meta.env.DEV) {
+  console.warn('VITE_API_URL is not set; defaulting API requests to /api in production.');
+}
 
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL || '',
