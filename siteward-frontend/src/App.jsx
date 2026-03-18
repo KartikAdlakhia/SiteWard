@@ -6,14 +6,15 @@ import { IssuesList } from './components/IssuesList';
 import './index.css';
 
 export default function App() {
-  // DEV BYPASS: Hardcode session to skip login page
-  const [session, setSession] = useState({ user: { id: '00000000-0000-0000-0000-000000000000', email: 'admin@siteward.local' } });
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [websites, setWebsites] = useState([]);
   const [selectedWebsite, setSelectedWebsite] = useState(null);
   const [loading, setLoading] = useState(true);
   const [scans, setScans] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState('overview');
+  const [searchTerm, setSearchTerm] = useState('');
 
   const getTabFromHash = () => {
     const hash = (window.location.hash || '').replace('#', '').toLowerCase();
@@ -29,24 +30,29 @@ export default function App() {
   };
 
   useEffect(() => {
-    /* DEV BYPASS: Commenting out real auth check
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      setAuthLoading(false);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      setAuthLoading(false);
     });
 
     return () => subscription.unsubscribe();
-    */
   }, []);
 
   useEffect(() => {
     if (session) {
       fetchWebsites();
+    } else {
+      setWebsites([]);
+      setSelectedWebsite(null);
+      setScans([]);
+      setLoading(false);
     }
   }, [session]);
 
@@ -73,9 +79,11 @@ export default function App() {
       setLoading(true);
       const data = await getWebsites();
       setWebsites(data);
-      if (data.length > 0 && !selectedWebsite) {
-        setSelectedWebsite(data[0]);
-      }
+      setSelectedWebsite((currentSelected) => {
+        if (!data.length) return null;
+        if (!currentSelected) return data[0];
+        return data.find((site) => site.id === currentSelected.id) || data[0];
+      });
     } catch (error) {
       console.error('Error fetching websites:', error);
     } finally {
@@ -106,8 +114,18 @@ export default function App() {
     }
   };
 
-  const handleSignOut = () => {
-    supabase.auth.signOut();
+  const handleSignOut = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error('Error signing out:', error);
+    } finally {
+      setSession(null);
+      setWebsites([]);
+      setSelectedWebsite(null);
+      setScans([]);
+      setIsModalOpen(false);
+    }
   };
 
   const handleWebsiteAdded = (website) => {
@@ -115,6 +133,30 @@ export default function App() {
     setSelectedWebsite(website);
     setIsModalOpen(false);
   };
+
+  const filteredWebsites = websites.filter((website) => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return true;
+    return (
+      website.name?.toLowerCase().includes(query) ||
+      website.url?.toLowerCase().includes(query)
+    );
+  });
+
+  useEffect(() => {
+    if (!filteredWebsites.length) return;
+    if (!selectedWebsite || !filteredWebsites.some((site) => site.id === selectedWebsite.id)) {
+      setSelectedWebsite(filteredWebsites[0]);
+    }
+  }, [searchTerm, selectedWebsite, filteredWebsites]);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background-light text-text-main">
+        Loading SiteWard...
+      </div>
+    );
+  }
 
   if (!session) {
     return <Auth onSession={setSession} />;
@@ -148,6 +190,8 @@ export default function App() {
                 <input 
                   className="form-input flex w-full min-w-0 flex-1 border-none bg-background-light text-text-main focus:ring-0 h-full placeholder:text-text-muted px-4 rounded-r-xl pl-2 text-sm" 
                   placeholder="Search your sites..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
             </label>
@@ -157,12 +201,16 @@ export default function App() {
               className="bg-background-light border-border-dark text-text-main text-sm rounded-lg focus:ring-primary focus:border-primary px-3 py-2 w-48"
               value={selectedWebsite?.id || ''}
               onChange={(e) => {
-                const site = websites.find(w => w.id === e.target.value);
+                const site = filteredWebsites.find(w => w.id === e.target.value);
                 if (site) setSelectedWebsite(site);
               }}
             >
-              {websites.length === 0 && <option value="">No sites added yet</option>}
-              {websites.map(w => (
+              {filteredWebsites.length === 0 && (
+                <option value="">
+                  {websites.length === 0 ? 'No sites added yet' : 'No matching sites'}
+                </option>
+              )}
+              {filteredWebsites.map(w => (
                 <option key={w.id} value={w.id}>{w.name}</option>
               ))}
             </select>
@@ -216,7 +264,11 @@ export default function App() {
 
         {/* MAIN CONTENT */}
         <main className="flex-1 flex flex-col max-w-7xl mx-auto w-full p-6 md:p-10 gap-6">
-          {selectedWebsite ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-20 text-text-muted">
+              Loading websites...
+            </div>
+          ) : selectedWebsite ? (
             <>
               {/* Breadcrumb */}
               <div className="flex flex-wrap items-center gap-2 text-sm text-text-muted">
