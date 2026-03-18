@@ -137,10 +137,13 @@ git push -u origin main
 2. Click "New Project"
 3. Select your `siteward` GitHub repository
 4. Configure project:
-   - **Framework**: Vite
-   - **Root Directory**: `siteward-frontend`
-   - **Build Command**: `npm run build`
-   - **Output Directory**: `dist`
+   - Preferred:
+     - **Framework**: Vite
+     - **Root Directory**: `siteward-frontend`
+     - **Build Command**: `npm run build`
+     - **Output Directory**: `dist`
+   - Alternative:
+     - Import the repo root directly and let the top-level [vercel.json](C:\AI Agents\Antigravity workspace\Siteward\vercel.json) handle install/build for `siteward-frontend`
 
 5. Add environment variables:
    ```
@@ -155,7 +158,7 @@ git push -u origin main
 
 ## 🔌 Step 3: Deploy Backend (API Server)
 
-### Option A: Deploy to Vercel (Recommended for Free Tier)
+### Option A: Deploy to Vercel
 
 1. Create a `/api` folder in `siteward-backend`
 2. Convert Express routes to Vercel Functions
@@ -168,7 +171,12 @@ git push -u origin main
 }
 ```
 
-### Option B: Use Railway.app (Free Alternative)
+This repo has not been converted to Vercel Functions yet, so deploying the
+current `siteward-backend` directly to Vercel will usually fail or behave
+poorly. The current backend uses Express plus Puppeteer/Lighthouse workloads,
+which are a better fit for Railway or Render.
+
+### Option B: Use Railway.app (Recommended for current backend)
 
 1. Go to https://railway.app
 2. Create new project

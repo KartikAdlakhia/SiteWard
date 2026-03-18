@@ -229,12 +229,21 @@ cd siteward-frontend
 vercel deploy --prod
 ```
 
+If you import the whole repository into Vercel instead of setting `siteward-frontend`
+as the Root Directory, the top-level [vercel.json](C:\AI Agents\Antigravity workspace\Siteward\vercel.json)
+now installs and builds the frontend correctly from the repo root.
+
 ### Backend Deployment
 ```bash
 cd siteward-backend
 npm run build
 vercel deploy --prod
 ```
+
+The backend is not a great fit for Vercel in its current form because it uses
+Express, Puppeteer, and Lighthouse-driven work that is better suited to a
+long-running Node service. Prefer Railway or Render for `siteward-backend`, then
+set `VITE_API_URL` in Vercel to that backend's `/api` URL.
 
 Set environment variables in Vercel dashboard:
 - `SUPABASE_URL`

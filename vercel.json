@@ -1,5 +1,13 @@
 {
+  "framework": "vite",
+  "installCommand": "npm install --prefix siteward-frontend",
   "buildCommand": "npm run build --prefix siteward-frontend",
   "outputDirectory": "siteward-frontend/dist",
-  "devCommand": "npm run dev --prefix siteward-frontend"
+  "devCommand": "npm run dev --prefix siteward-frontend",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
